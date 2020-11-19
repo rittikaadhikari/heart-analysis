@@ -1,7 +1,7 @@
 ---
-title: "Title of Analysis Goes Here"
-author: "Your Name (netid@illinois.edu)"
-date: "Insert Date Here"
+title: "Heart Analysis"
+author: "Rittika Adhikari (rittika2@illinois.edu)"
+date: "Wednesday Nov 11, 2020"
 output:
   html_document: 
     theme: default
@@ -14,53 +14,363 @@ knitr::opts_chunk$set(echo = FALSE, fig.align = 'center')
 
 ```{r, load-packages, include = FALSE}
 # load packages
+library("tidyverse")
+library("caret")
+library("rpart")
+library("rpart.plot")
 ```
 
-```{r read-full-data, warning = FALSE, message = FALSE}
+```{r read-full-data, include = FALSE, warning = FALSE, message = FALSE}
 # read full data
 hd = readr::read_csv("data/hd.csv")
+hd$res = ifelse(hd$num != "v0", TRUE, FALSE) # binary response
+
+# test-train split data
+trn_idx = createDataPartition(hd$num, p = 0.80, list = TRUE)
+trn = hd[trn_idx$Resample1,]
+tst = hd[-trn_idx$Resample1,]
+
+
+# feature engineering
+trn$num = factor(trn$num)
+trn$res = factor(trn$res)
+trn$location = factor(trn$location)
+trn$cp = factor(trn$cp)
+trn$sex = factor(trn$sex)
+trn$fbs = factor(trn$fbs)
+trn$restecg = factor(trn$restecg)
+trn$exang = factor(trn$exang)
+trn[which(trn$chol == 0),]$chol = NA
+
+tst$num = factor(tst$num)
+tst$res = factor(tst$res)
+tst$location = factor(tst$location)
+tst$cp = factor(tst$cp)
+tst$sex = factor(tst$sex)
+tst$fbs = factor(tst$fbs)
+tst$restecg = factor(tst$restecg)
+tst$exang = factor(tst$exang)
+tst[which(tst$chol == 0),]$chol = NA
 ```
 
 ***
 
 ## Abstract
-
-> Abstract text goes here.
+Heart disease plagues thousands of Americans every year, and continues to be a prevalent issue. Diagnosing heart disease currently requires a series of intensive, invasive tests which are both time-consuming and sometimes painful. This analysis proposes building a "screening" model to assess the likelihood of a person being susceptible to heart disease. We trained a model using the Stochastic Gradient Boosting Algorithm with 5 folds of cross validation on lightly pruned data, and were able to attain ~80% accuracy, with a relatively low number of false negatives and false positives. The results of this "screening" model seem promising, and could lead the way to some interesting future work.
 
 ***
 
 ## Introduction
 
-Write your introduction here.
+Heart disease is the leading cause of death for men, women, and people of most ethnic and racial groups in the United States of America. In fact, about 650K Americans die from heart disease every year - that's 1 in every 4 deaths. Additionally, heart disease costs the US $219B every year in health care services, medicines, and lost productivity due to death. Currently, diagnosing heart disease requires a series of intensive, invasive tests (i.e. ECG, Holter monitoring, stress test, etc.) in order to assess the exact risk and danger that the patient is in. However, what if we could add a non-invasive, fairly accurate "screening" test before doctors move towards more invasive tests? In this analysis, I consider UCI Irvine's Heart Disease dataset to assess whether or not a patient has heart disease using commonly available metrics. 
 
 ***
 
 ## Methods
 
-Describe the methods used in this section.
+I tackled this problem by first extensively evaluating the data & filling in (or omitting) missing gaps in data through judgment calls. Then, I experimented with a variety of different modeling techniques with different versions of the data (i.e. omitting more or less rows) in order to determine the best technique for this problem. Once I settled on a model, I tuned the parameters and evaluated it on a estimation-validation split, and then a train-test split. 
 
 ### Data
 
-Specifically describe the data and how it is used here.
+The UCI Irvine Machine Learning Heart Disease data can be divided into four different tiers, separated by the difficulty required to actually run the test required to get the data. The tiers are described below. 
+
+0. **Tier 0** - readily available patient information
+    a) `age` - age in years
+    b) `sex` - 1 = male; 0 = female
+    c) `cp` - chest pain type
+    
+1. **Tier 1** - requires a quick test or two to obtain information
+    a) `trestbps` - resting blood pressure (mm Hg)
+    b) `chol` - serum cholesterol (mg/dl)
+    c) `fbs` - fasting blood sugar > 120 mg/dl (1 = true; 0 = false)
+
+2. **Tier 2** - requires more intensive tests to obtain data
+    a) `restecg` - resting electrocardiographic results
+    b) `thalach` - max heart rate achieved
+    c) `exang` - exercise induced angina (1 = yes; 0 = no)
+    d) `oldpeak` - ST depression induced by exercise relative to rest
+    e) `slope` - slope of peak exercise ST segment
+    
+3. **Tier 3** - requires the most invasive, intensive tests to obtain data
+    a) `ca` - # of major vessels colored by flouroscopy
+    b) `thal` - 3 = normal; 6 = fixed defect; 7 = reversable defect
+
+The response variable we are aiming to predict is `num`, which indicates the presence of heart disease in 5 different levels, where "v0" indicates no heart disease and "v1" - "v4" indicates heart disease with increasing levels of severity. For the purpose of this analysis, I decided to convert `num` into a binary response variable called `res`, where "TRUE" indicates the presence of heart disease and "FALSE" says otherwise. 
+
+While observing the data, I noticed that there are quite a few missing pieces of information. To address this, I initially omitted all data points missing any information. However, this led to a significant loss of data, which led to worse performance in my initial evaluation on simple models. To alleviate this, I modified the dataset to drop records with more than 33% NaNs. [Note: I also noticed that `chol` was 0s in several columns, so I added a pre-processing step to set all those initial values to NaNs before this step.]
+
+```{r, knit = TRUE, echo = TRUE}
+na_prop = function(x) {
+  mean(is.na(x))
+}
+
+trn_omit = na.omit(trn[, !sapply(trn, na_prop) > 0.33])
+trn_omit = subset(trn_omit, select = -c(num))
+```
+
+This solution is not perfect, as it does omit records, and ideally, we want to keep as many features as possible. However, it doesn't seem that there is a simple way to reconstruct this data realistically. We did consider reconstructing the missing `trestbps` by finding a correlation with one of the more readily accessible numeric attributes, but there didn't seem to be any evident ones from the below graphs. 
+
+```{r, knit = TRUE}
+plot(trestbps ~ age, trn, pch = 20, col = trn$num)
+plot(trestbps ~ chol, trn, pch = 20, col = trn$num)
+grid()
+```
 
 ### Modeling
 
-Discuss your modeling and validation strategy here.
+For my models, I first established a baseline (i.e. what would happen if I just always predicted no heart disease) in order to learn what a "good" accuracy rate would be for my final model. As can be seen from the below chunk, if we always predict that a patient has no heart disease, we can attain ~52% accuracy. Thus, we want our final model to perform significantly better than this baseline.
+
+```{r, knit = TRUE, echo = TRUE}
+# estimation-validation split of data
+set.seed(42)
+est_idx = createDataPartition(trn_omit$res, p = 0.80, list = TRUE)
+est = trn_omit[est_idx$Resample1, ]
+val = trn_omit[-est_idx$Resample1, ]
+
+# what happens if we always say no?
+table(
+  actual = val$res,
+  predicted = factor(rep(FALSE, length(val$res), levels=levels(val$res)))
+)
+
+# what is the baseline accuracy?
+mean(rep(FALSE, length(val$res), levels=levels(val$res)) == val$res)
+```
+
+
+Then, I compared a variety of different modeling techniques such as decision tress, KNN, and Stochastic Gradient Boosting with cross validation on both the all omitted dataset and partially omitted dataset. 
+
+```{r, echo = TRUE, results = "hide"}
+cv_5 = trainControl(method = "cv", number = 5)
+knn_mod = train(form = res ~ ., data = est, method = "knn", trControl = cv_5)
+tree_mod = train(form = res ~ ., data = est, method = "rpart", trControl = cv_5) 
+gbm_mod = train(form = res ~ ., data = est, method = "gbm", trControl = cv_5) 
+```
+
+
+```{r, echo = TRUE}
+mean(predict(knn_mod, newdata = val, type = "raw") == val$res)
+mean(predict(tree_mod, newdata = val, type = "raw") == val$res)
+mean(predict(gbm_mod, newdata = val, type = "raw") == val$res)
+```
 
 ***
 
 ## Results
 
-State your results here.
+Through my analysis, I found that the best model is a Gradient Boosting Model with `n.trees` = 50, `interaction.depth` = 1, `shrinkage` = 0.1, and `n.minobsinnode` = 10, when trained on the data that only omits if there are more than 33% NaNs in a record using a cross validation fold of 5. This model ended up having an accuracy of 79.07%, which was much higher than the baseline of around 53%. 
+
+```{r, knit = TRUE}
+#######################################################################################################
+# modify dataset without columns containing more than 33% NAs
+# Note: trn$fbs has a significant number of NAs -- keep in mind that most data points are no
+trn_omit = na.omit(trn[, !sapply(trn, na_prop) > 0.33])
+trn_omit = subset(trn_omit, select = -c(num))
+
+
+# train on full train set
+cv_5 = trainControl(method = "cv", number = 5)
+gbm_mod_official = train(form = res ~ ., data = trn_omit, method = "gbm", trControl = cv_5, verbose=FALSE) # good
+
+
+# omit in tst data as well
+tst_omit = na.omit(tst[, !sapply(tst, na_prop) > 0.33])
+tst_omit = subset(tst_omit, select = -c(num))
+
+
+# calculate test accuracy
+preds = predict(gbm_mod_official, newdata = tst_omit, type = "raw")
+
+
+# confusion matrix
+confusionMatrix(preds, tst_omit$res)
+```
 
 ***
 
 ## Discussion
 
-Discuss your results here.
+This model performed significantly better from the baseline, with relatively high accuracy on the test dataset. Additionally, as can be seen from the confusion matrix in the previous section, it had relatively low false negatives and false positives. False negatives are especially dangerous, because if this model is used in an actual medical capacity and has a high number of false negatives, several patients suffering from heart disease would go undetected. On the flip side, if there was a high number of false negatives, several patients would be put through strenuous, invasive, unnecessary testing under the impression that they have heart disease. Thus the low false negative and false positive rate is especially promising.
 
 ***
 
 ## Appendix
+Below is all the code I utilized to complete my analysis.
 
-Place potential additional information here.
+```{r, eval=FALSE, echo=TRUE}
+# load packages
+library("tidyverse")
+library("caret")
+library("rpart")
+library("rpart.plot")
+
+# read in the data
+hd = read_csv("data/hd.csv")
+hd$res = ifelse(hd$num != "v0", TRUE, FALSE)
+
+# test-train split data
+trn_idx = createDataPartition(hd$num, p = 0.80, list = TRUE)
+trn = hd[trn_idx$Resample1,]
+tst = hd[-trn_idx$Resample1,]
+
+
+# feature engineering
+trn$num = factor(trn$num)
+trn$res = factor(trn$res)
+trn$location = factor(trn$location)
+trn$cp = factor(trn$cp)
+trn$sex = factor(trn$sex)
+trn$fbs = factor(trn$fbs)
+trn$restecg = factor(trn$restecg)
+trn$exang = factor(trn$exang)
+trn[which(trn$chol == 0),]$chol = NA
+
+tst$num = factor(tst$num)
+tst$res = factor(tst$res)
+tst$location = factor(tst$location)
+tst$cp = factor(tst$cp)
+tst$sex = factor(tst$sex)
+tst$fbs = factor(tst$fbs)
+tst$restecg = factor(tst$restecg)
+tst$exang = factor(tst$exang)
+tst[which(tst$chol == 0),]$chol = NA
+
+
+# function to determine proportion of NAs in a vector
+na_prop = function(x) {
+  mean(is.na(x))
+}
+
+
+# check proportion of NAs in each column
+sapply(trn, na_prop)
+
+# look at data
+skimr::skim(trn)
+
+
+# starting exploratory analysis
+plot(trestbps ~ age, trn, pch = 20, col = trn$num)
+grid()
+
+
+# can we fit a model? yes!
+rpart(num ~ ., data = trn)
+
+
+#######################################################################################################
+# remove any observation with NA
+trn_full = na.omit(trn)
+
+
+# estimation-validation split of data
+set.seed(42)
+est_idx = createDataPartition(trn_full$num, p = 0.80, list = TRUE)
+est = trn_full[est_idx$Resample1, ]
+val = trn_full[-est_idx$Resample1, ]
+
+
+# looking at response in estimation data
+table(est$num)
+
+
+# what happens if we always say no?
+table(
+  actual = val$num,
+  predicted = factor(rep("v0", length(val$num), levels=levels(val$num)))
+)
+
+
+# fit first model
+mod = rpart(num ~ ., data = est)
+rpart.plot(mod)
+
+
+# model baseline
+table(
+  actual = val$num,
+  predicted = predict(mod, val, type = "class")
+)
+
+
+# calculate baseline accuracy
+mean(predict(mod, val, type = "class") == val$num)
+
+
+#######################################################################################################
+# remove any observation with NA
+trn_full = na.omit(trn)
+
+
+# classification
+cv_5 = trainControl(method = "cv", number = 5)
+tree_mod = train(form = num ~ ., data = trn_full, method = "rpart", trControl = cv_5) # good
+knn_mod = train(form = num ~ ., data = trn_full, method = "knn", trControl = cv_5)
+gbm_mod = train(form = num ~ ., data = trn_full, method = "gbm", trControl = cv_5) # good
+
+
+#######################################################################################################
+# remove any observation with NA
+trn_full = na.omit(trn)
+trn_full = subset(trn_full, select = -c(num))
+
+
+# binary response
+cv_5 = trainControl(method = "cv", number = 5)
+tree_mod = train(form = res ~ ., data = trn_full, method = "rpart", trControl = cv_5) # good
+gbm_mod = train(form = res ~ ., data = trn_full, method = "gbm", trControl = cv_5) # good
+
+
+#######################################################################################################
+# modify dataset without columns containing more than 33% NAs
+# Note: trn$fbs has a significant number of NAs -- keep in mind that most data points are no
+trn_omit = na.omit(trn[, !sapply(trn, na_prop) > 0.33])
+trn_omit = subset(trn_omit, select = -c(num))
+
+
+# binary response
+cv_5 = trainControl(method = "cv", number = 5)
+tree_mod = train(form = res ~ ., data = trn_omit, method = "rpart", trControl = cv_5) # good
+gbm_mod = train(form = res ~ ., data = trn_omit, method = "gbm", trControl = cv_5) # good
+
+
+#######################################################################################################
+# modify dataset without columns containing more than 33% NAs
+# Note: trn$fbs has a significant number of NAs -- keep in mind that most data points are no
+trn_omit = na.omit(trn[, !sapply(trn, na_prop) > 0.33])
+trn_omit = subset(trn_omit, select = -c(num))
+
+
+# estimation-validation split of data
+set.seed(42)
+est_idx = createDataPartition(trn_omit$res, p = 0.80, list = TRUE)
+est = trn_omit[est_idx$Resample1, ]
+val = trn_omit[-est_idx$Resample1, ]
+
+# binary response
+cv_5 = trainControl(method = "cv", number = 5)
+gbm_mod = train(form = res ~ ., data = est, method = "gbm", trControl = cv_5) # good
+
+
+# calculate validation accuracy
+print(mean(predict(gbm_mod, val, type = "raw") == val$res))
+
+
+# train on full train set
+gbm_mod_official = train(form = res ~ ., data = trn_omit, method = "gbm", trControl = cv_5) # good
+
+
+# omit in tst data as well
+tst_omit = na.omit(tst[, !sapply(tst, na_prop) > 0.33])
+tst_omit = subset(tst_omit, select = -c(num))
+
+
+# calculate test accuracy
+preds = predict(gbm_mod_official, newdata = tst_omit, type = "raw")
+print(mean(preds == tst_omit$res))
+
+
+# confusion matrix
+confusionMatrix(preds, tst_omit$res)
+
+```
